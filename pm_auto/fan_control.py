@@ -182,6 +182,7 @@ class FanControl:
                 self.log.info(f"set fan power: {power}")
                 self.log.info(
                     f"cpu temperature: {temperature} \'C, {direction}er than {FAN_LEVELS[self.level][direction]}")
+                mqtt_bridge.publish_fan_status(current_fan_speed)
             elif self.initial:
                 self.log.info(f"cpu temperature: {temperature} \'C")
                 self.initial = False
