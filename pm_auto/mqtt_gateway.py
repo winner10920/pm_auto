@@ -2,13 +2,30 @@ import threading
 import glob
 import json
 import logging
+import os
 from evdev import InputDevice, ecodes
 import paho.mqtt.client as mqtt
 
-# --- Configuration ---
-MQTT_BROKER = "core-mosquitto" # Internal HA hostname (or use your explicit Pi IP)
-MQTT_USER = "your_mqtt_username"
-MQTT_PASS = "your_mqtt_password"
+def get_mqtt_config():
+    """Extracts MQTT configurations mapped by Home Assistant Supervisor."""
+    options_file = "/data/options.json"
+    
+    if os.path.exists(options_file):
+        try:
+            with open(options_file, "r") as f:
+                options = json.load(f)
+                broker = options.get("mqtt_broker", "core-mosquitto")
+                user = options.get("mqtt_username", "")
+                password = options.get("mqtt_password", "")
+                return broker, user, password
+        except Exception as e:
+            logging.error(f"Failed to parse HA options.json: {e}")
+            
+    # Fallback if running outside of HA environment
+    return "core-mosquitto", "", ""
+
+MQTT_BROKER, MQTT_USER, MQTT_PASS = get_mqtt_config()
+
 
 class PironmanMQTTBridge:
     def __init__(self, pm_mcu=None, pm_ws2812=None):
