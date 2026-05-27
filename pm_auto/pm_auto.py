@@ -3,6 +3,7 @@ import threading
 from sf_rpi_status import shutdown
 
 from .utils import has_common_items, log_error
+from pm_auto.mqtt_gateway import PironmanMQTTBridge
 
 app_name = 'pm_auto'
 
@@ -67,6 +68,8 @@ class PMAuto():
             from .vibration_switch import VibrationSwitch
             self.vibration_switch = VibrationSwitch(config, get_logger=get_logger)
             self.vibration_switch.set_on_vabration_detected(self.on_vabration_detected)
+        mqtt_bridge = PironmanMQTTBridge(pm_ws2812=ws2812_instance)
+        mqtt_bridge.start()    
 
         self.interval = 1
     
