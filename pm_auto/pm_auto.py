@@ -68,8 +68,8 @@ class PMAuto():
             from .vibration_switch import VibrationSwitch
             self.vibration_switch = VibrationSwitch(config, get_logger=get_logger)
             self.vibration_switch.set_on_vabration_detected(self.on_vabration_detected)
-        mqtt_bridge = PironmanMQTTBridge(pm_ws2812=ws2812_instance)
-        mqtt_bridge.start()    
+            mqtt_bridge = PironmanMQTTBridge(pm_ws2812=self.ws2812)
+            mqtt_bridge.start()    
 
         self.interval = 1
     
