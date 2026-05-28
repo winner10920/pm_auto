@@ -99,17 +99,27 @@ class PironmanMQTTBridge:
         time.sleep(5) # Let the system boot before scanning for devices
         ir_device = None
         
-        for path in glob.glob('/dev/input/event*'):
-            try:
-                dev = InputDevice(path)
-                if "ir" in dev.name.lower() or "gpio" in dev.name.lower():
-                    ir_device = dev
-                    break
-            except Exception:
-                continue
+        log_msg("--- STARTING IR DIAGNOSTICS ---")
+        
+        if not os.path.exists('/dev/input'):
+            log_msg("DIAGNOSTIC FATAL: The '/dev/input' folder does not exist inside the container!")
+        else:
+            paths = glob.glob('/dev/input/*')
+            log_msg(f"DIAGNOSTIC: Found {len(paths)} items in /dev/input/: {paths}")
+            
+            for path in glob.glob('/dev/input/event*'):
+                try:
+                    dev = InputDevice(path)
+                    log_msg(f"DIAGNOSTIC SUCCESS: Opened {path} -> Name: '{dev.name}' | Phys: '{dev.phys}'")
+                    if "ir" in dev.name.lower() or "gpio" in dev.name.lower():
+                        ir_device = dev
+                        log_msg(f"DIAGNOSTIC MATCH: {dev.name} selected as IR receiver!")
+                        break
+                except Exception as e:
+                    log_msg(f"DIAGNOSTIC ERROR: Could not open {path}. Reason: {type(e).__name__} - {e}")
 
         if not ir_device:
-            log_msg("FATAL: IR Receiver hardware device not detected in /dev/input/. Did you edit the host config.txt?")
+            log_msg("FATAL: IR Receiver hardware device not detected after diagnostic scan.")
             return
 
         log_msg(f"Bound hardware IR engine to input stream: {ir_device.path}")
