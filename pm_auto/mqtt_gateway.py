@@ -11,7 +11,6 @@ def log_msg(msg):
     print(f"[MQTT Gateway] {msg}", flush=True)
 
 def get_mqtt_config():
-    """Extracts MQTT configurations mapped by Home Assistant Supervisor."""
     options_file = "/data/options.json"
     if os.path.exists(options_file):
         try:
@@ -48,25 +47,6 @@ class PironmanMQTTBridge:
     def on_connect(self, client, userdata, flags, rc):
         log_msg(f"Successfully connected to MQTT Broker! (Result Code: {rc})")
         client.subscribe("pironman/rgb/set")
-        
-        # Inject Home Assistant Auto-Discovery for the RGB Light
-        discovery_payload = {
-            "name": "Pironman Case Lights",
-            "schema": "json",
-            "command_topic": "pironman/rgb/set",
-            "state_topic": "pironman/rgb/state",
-            "brightness": False,
-            "color_mode": True,
-            "supported_color_modes": ["rgb"],
-            "unique_id": "pironman5_rgb_strip",
-            "device": {
-                "identifiers": ["pironman5_case"],
-                "name": "Pironman 5",
-                "manufacturer": "SunFounder"
-            }
-        }
-        client.publish("homeassistant/light/pironman5_rgb/config", json.dumps(discovery_payload), retain=True)
-        log_msg("Published Auto-Discovery payload. The light entity should now appear in HA!")
 
     def on_message(self, client, userdata, msg):
         try:
@@ -74,21 +54,15 @@ class PironmanMQTTBridge:
             log_msg(f"Received Command: {payload}")
             
             if msg.topic == "pironman/rgb/set":
+                # Interrogate the LED object to see what SunFounder named their functions
+                if self.ws2812:
+                    methods = [m for m in dir(self.ws2812) if callable(getattr(self.ws2812, m)) and not m.startswith('_')]
+                    log_msg(f"DIAGNOSTIC - WS2812 Available Methods: {methods}")
+                
+                # Keep the Home Assistant UI toggle in sync while we test
                 if payload.get("state") == "ON":
-                    if "color" in payload:
-                        r = payload["color"].get("r", 255)
-                        g = payload["color"].get("g", 255)
-                        b = payload["color"].get("b", 255)
-                        if self.ws2812:
-                            self.ws2812.update_rgb_style('solid')
-                            self.ws2812.update_rgb_color([r, g, b])
-                            
-                    # Report back to HA that the light is actually ON
                     self.client.publish("pironman/rgb/state", json.dumps({"state": "ON"}), retain=True)
-                    
                 elif payload.get("state") == "OFF":
-                    if self.ws2812:
-                        self.ws2812.update_rgb_enable(False)
                     self.client.publish("pironman/rgb/state", json.dumps({"state": "OFF"}), retain=True)
                         
         except Exception as e:
@@ -96,36 +70,26 @@ class PironmanMQTTBridge:
 
     def ir_receiver_loop(self):
         """Scans system input events to capture hardware IR signals dynamically"""
-        time.sleep(5) # Let the system boot before scanning for devices
+        time.sleep(5) 
         ir_device = None
         
-        log_msg("--- STARTING IR DIAGNOSTICS ---")
-        
-        if not os.path.exists('/dev/input'):
-            log_msg("DIAGNOSTIC FATAL: The '/dev/input' folder does not exist inside the container!")
-        else:
-            paths = glob.glob('/dev/input/*')
-            log_msg(f"DIAGNOSTIC: Found {len(paths)} items in /dev/input/: {paths}")
-            
-            for path in glob.glob('/dev/input/event*'):
-                try:
-                    dev = InputDevice(path)
-                    log_msg(f"DIAGNOSTIC SUCCESS: Opened {path} -> Name: '{dev.name}' | Phys: '{dev.phys}'")
-                    if "ir" in dev.name.lower() or "gpio" in dev.name.lower():
-                        ir_device = dev
-                        log_msg(f"DIAGNOSTIC MATCH: {dev.name} selected as IR receiver!")
-                        break
-                except Exception as e:
-                    log_msg(f"DIAGNOSTIC ERROR: Could not open {path}. Reason: {type(e).__name__} - {e}")
+        for path in glob.glob('/dev/input/event*'):
+            try:
+                dev = InputDevice(path)
+                if "ir" in dev.name.lower() or "gpio" in dev.name.lower():
+                    ir_device = dev
+                    break
+            except Exception:
+                continue
 
         if not ir_device:
-            log_msg("FATAL: IR Receiver hardware device not detected after diagnostic scan.")
+            log_msg("FATAL: IR Receiver hardware device not detected.")
             return
 
         log_msg(f"Bound hardware IR engine to input stream: {ir_device.path}")
         
+        # Listen to the raw hardware stream without filtering
         for event in ir_device.read_loop():
-            if event.type == ecodes.EV_KEY and event.value == 1:
-                payload = {"code": event.code, "hex": hex(event.code)}
-                log_msg(f"IR Code Captured: {payload}")
-                self.client.publish("pironman/ir/receiver", json.dumps(payload), qos=1)
+            # Filter out synchronization bursts to avoid log spam, print everything else
+            if event.type != ecodes.EV_SYN:
+                log_msg(f"Raw Input Event -> Type: {event.type}, Code: {event.code}, Value: {event.value}")
