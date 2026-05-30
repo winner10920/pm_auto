@@ -39,8 +39,9 @@ class PironmanMQTTBridge:
             self.client.connect(MQTT_BROKER, 1883, 60)
             self.client.loop_start()
             
-            ir_thread = threading.Thread(target=self.ir_receiver_loop, daemon=True)
-            ir_thread.start()
+            # Start hardware listeners
+            threading.Thread(target=self.ir_receiver_loop, daemon=True).start()
+            threading.Thread(target=self.fan_telemetry_loop, daemon=True).start()
         except Exception as e:
             log_msg(f"Critical failure connecting to MQTT Broker: {e}")
 
@@ -48,25 +49,82 @@ class PironmanMQTTBridge:
         log_msg(f"Successfully connected to MQTT Broker! (Result Code: {rc})")
         client.subscribe("pironman/rgb/set")
 
+        # 1. RGB Light Auto-Discovery
+        light_payload = {
+            "name": "Pironman Case Lights",
+            "schema": "json",
+            "command_topic": "pironman/rgb/set",
+            "state_topic": "pironman/rgb/state",
+            "brightness": True,
+            "color_mode": True,
+            "supported_color_modes": ["rgb"],
+            "unique_id": "pironman5_rgb_strip",
+            "device": {"identifiers": ["pironman5_case"], "name": "Pironman 5", "manufacturer": "SunFounder"}
+        }
+        client.publish("homeassistant/light/pironman5_rgb/config", json.dumps(light_payload), retain=True)
+
+        # 2. Fan Speed Auto-Discovery
+        fan_payload = {
+            "name": "Pironman Fan Speed",
+            "state_topic": "pironman/fan/speed",
+            "unit_of_measurement": "RPM",
+            "value_template": "{{ value_json.speed }}",
+            "icon": "mdi:fan",
+            "unique_id": "pironman5_fan_speed",
+            "device": {"identifiers": ["pironman5_case"], "name": "Pironman 5", "manufacturer": "SunFounder"}
+        }
+        client.publish("homeassistant/sensor/pironman5_fan/config", json.dumps(fan_payload), retain=True)
+
     def on_message(self, client, userdata, msg):
         try:
             payload = json.loads(msg.payload.decode())
-            log_msg(f"Received Command: {payload}")
+            log_msg(f"Received HA Command: {payload}")
             
             if msg.topic == "pironman/rgb/set":
-                # Interrogate the LED object to see what SunFounder named their functions
-                if self.ws2812:
-                    methods = [m for m in dir(self.ws2812) if callable(getattr(self.ws2812, m)) and not m.startswith('_')]
-                    log_msg(f"DIAGNOSTIC - WS2812 Available Methods: {methods}")
-                
-                # Keep the Home Assistant UI toggle in sync while we test
                 if payload.get("state") == "ON":
+                    config_update = {"rgb_enable": True, "rgb_style": "solid"}
+                    
+                    # Map HA Brightness (0-255) to WS2812 (0-100)
+                    if "brightness" in payload:
+                        ha_bright = payload.get("brightness", 255)
+                        config_update["rgb_brightness"] = int((ha_bright / 255.0) * 100)
+                    
+                    # Map HA Color (R,G,B) to WS2812 Hex
+                    if "color" in payload:
+                        r = payload["color"].get("r", 255)
+                        g = payload["color"].get("g", 255)
+                        b = payload["color"].get("b", 255)
+                        config_update["rgb_color"] = f"#{r:02x}{g:02x}{b:02x}"
+                        
+                    if self.ws2812:
+                        self.ws2812.update_config(config_update)
+                        
                     self.client.publish("pironman/rgb/state", json.dumps({"state": "ON"}), retain=True)
+                    
                 elif payload.get("state") == "OFF":
+                    if self.ws2812:
+                        self.ws2812.update_config({"rgb_enable": False})
                     self.client.publish("pironman/rgb/state", json.dumps({"state": "OFF"}), retain=True)
                         
         except Exception as e:
             log_msg(f"Error parsing MQTT message: {e}")
+
+    def fan_telemetry_loop(self):
+        """Reads hardware tree to bypass SunFounder class tracking"""
+        hwmon_dir = '/sys/devices/platform/cooling_fan/hwmon/'
+        while True:
+            time.sleep(5) # Update every 5 seconds
+            try:
+                if os.path.exists(hwmon_dir):
+                    subdirs = os.listdir(hwmon_dir)
+                    if subdirs:
+                        path = os.path.join(hwmon_dir, subdirs[0], 'fan1_input')
+                        if os.path.exists(path):
+                            with open(path, 'r') as f:
+                                speed = int(f.read().strip())
+                            self.client.publish("pironman/fan/speed", json.dumps({"speed": speed}), retain=True)
+            except Exception:
+                pass
 
     def ir_receiver_loop(self):
         """Scans system input events to capture hardware IR signals dynamically"""
@@ -88,8 +146,12 @@ class PironmanMQTTBridge:
 
         log_msg(f"Bound hardware IR engine to input stream: {ir_device.path}")
         
-        # Listen to the raw hardware stream without filtering
         for event in ir_device.read_loop():
-            # Filter out synchronization bursts to avoid log spam, print everything else
+            # Skip synchronization bursts to prevent log spam
             if event.type != ecodes.EV_SYN:
                 log_msg(f"Raw Input Event -> Type: {event.type}, Code: {event.code}, Value: {event.value}")
+                
+                # If a button is pressed down, forward it to Home Assistant
+                if event.value == 1: 
+                    payload = {"code": event.code, "type": event.type}
+                    self.client.publish("pironman/ir/receiver", json.dumps(payload), qos=1)
